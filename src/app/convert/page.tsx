@@ -2,10 +2,10 @@
 
 /**
  * /convert — Direct PDF upload & conversion page.
- * No Canva login required. Users can drag-and-drop or select a PDF file.
+ * All conversion happens client-side using pdfjs-dist.
  */
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Upload,
   FileUp,
@@ -18,27 +18,18 @@ import {
   Sparkles,
   ArrowLeft,
   X,
+  Layers,
 } from "lucide-react";
 import ProgressBar from "@/components/ProgressBar";
+import {
+  getPdfPageCount,
+  pdfToCanvasPng,
+  pdfToSvg,
+} from "@/lib/clientConvert";
 
 type ExportFormat = "png" | "svg";
 type ConvertStatus = "idle" | "uploading" | "converting" | "done" | "error";
-
-const STATUS_LABELS: Record<ConvertStatus, string> = {
-  idle: "",
-  uploading: "Uploading PDF…",
-  converting: "Converting file…",
-  done: "Conversion complete!",
-  error: "Conversion failed",
-};
-
-const STATUS_PROGRESS: Record<ConvertStatus, number> = {
-  idle: 0,
-  uploading: 30,
-  converting: 70,
-  done: 100,
-  error: 0,
-};
+type PageMode = "all" | "select";
 
 export default function ConvertPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -47,9 +38,16 @@ export default function ConvertPage() {
   const [status, setStatus] = useState<ConvertStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [isDragging, setIsDragging] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback((f: File) => {
+  // Page selection
+  const [pageCount, setPageCount] = useState(0);
+  const [pageMode, setPageMode] = useState<PageMode>("all");
+  const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set());
+
+  const handleFile = useCallback(async (f: File) => {
     if (
       f.type === "application/pdf" ||
       f.name.toLowerCase().endsWith(".pdf")
@@ -57,11 +55,30 @@ export default function ConvertPage() {
       setFile(f);
       setStatus("idle");
       setErrorMsg("");
+      setPageMode("all");
+      setSelectedPages(new Set());
+
+      // Get page count
+      try {
+        const count = await getPdfPageCount(f);
+        setPageCount(count);
+        // Select all pages by default
+        setSelectedPages(new Set(Array.from({ length: count }, (_, i) => i + 1)));
+      } catch {
+        setPageCount(0);
+      }
     } else {
       setErrorMsg("Please upload a PDF file.");
       setStatus("error");
     }
   }, []);
+
+  // Update selected pages when mode changes
+  useEffect(() => {
+    if (pageMode === "all" && pageCount > 0) {
+      setSelectedPages(new Set(Array.from({ length: pageCount }, (_, i) => i + 1)));
+    }
+  }, [pageMode, pageCount]);
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -85,45 +102,63 @@ export default function ConvertPage() {
     if (f) handleFile(f);
   }
 
+  function togglePage(page: number) {
+    setSelectedPages((prev) => {
+      const next = new Set(prev);
+      if (next.has(page)) {
+        next.delete(page);
+      } else {
+        next.add(page);
+      }
+      return next;
+    });
+  }
+
   async function handleConvert() {
     if (!file) return;
 
-    setStatus("uploading");
+    const pages = pageMode === "all"
+      ? undefined
+      : Array.from(selectedPages).sort((a, b) => a - b);
+
+    if (pageMode === "select" && (!pages || pages.length === 0)) {
+      setErrorMsg("Please select at least one page.");
+      setStatus("error");
+      return;
+    }
+
+    setStatus("converting");
     setErrorMsg("");
+    setProgress(0);
+    setProgressLabel("Preparing conversion…");
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("format", format);
-      formData.append("dpi", dpi.toString());
+      const onProgress = (current: number, total: number) => {
+        const pct = Math.round((current / total) * 100);
+        setProgress(pct);
+        setProgressLabel(`Converting page ${current} of ${total}…`);
+      };
 
-      setStatus("converting");
+      let result: { blob: Blob; filename: string };
 
-      const res = await fetch("/api/convert", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error(data.error || `Conversion failed: ${res.status}`);
+      if (format === "png") {
+        result = await pdfToCanvasPng(file, dpi, pages, onProgress);
+      } else {
+        result = await pdfToSvg(file, pages, onProgress);
       }
 
       // Download the result
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(result.blob);
       const a = document.createElement("a");
-
-      const baseName =
-        file.name.replace(/\.pdf$/i, "").trim() || "converted";
-      const ext = format === "png" ? `_${dpi}dpi.png` : ".svg";
-      a.download = `${baseName}${ext}`;
+      a.download = result.filename;
       a.href = url;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      setProgress(100);
+      setProgressLabel("Conversion complete!");
       setStatus("done");
     } catch (err) {
       setStatus("error");
@@ -131,7 +166,7 @@ export default function ConvertPage() {
     }
   }
 
-  const isProcessing = status === "uploading" || status === "converting";
+  const isProcessing = status === "converting";
 
   return (
     <div className="min-h-screen">
@@ -165,8 +200,8 @@ export default function ConvertPage() {
             Convert PDF to PNG-24 / SVG
           </h1>
           <p className="text-muted">
-            Upload your PDF file and get transparent PNG or vector SVG — no
-            login required.
+            Upload your PDF file and get transparent PNG or vector SVG — processed
+            entirely in your browser, no upload needed.
           </p>
         </div>
 
@@ -202,6 +237,7 @@ export default function ConvertPage() {
                   <p className="font-semibold">{file.name}</p>
                   <p className="text-sm text-muted mt-1">
                     {(file.size / (1024 * 1024)).toFixed(2)} MB
+                    {pageCount > 0 && ` · ${pageCount} page${pageCount > 1 ? "s" : ""}`}
                   </p>
                 </div>
                 <button
@@ -209,6 +245,8 @@ export default function ConvertPage() {
                     e.stopPropagation();
                     setFile(null);
                     setStatus("idle");
+                    setPageCount(0);
+                    setSelectedPages(new Set());
                   }}
                   className="absolute top-3 right-3 p-1.5 rounded-lg hover:bg-white/[0.06] text-muted hover:text-foreground transition-colors"
                 >
@@ -299,13 +337,78 @@ export default function ConvertPage() {
             </div>
           )}
 
+          {/* Page selector */}
+          {file && pageCount > 0 && (
+            <div className="animate-fade-in">
+              <div className="flex items-center gap-2 mb-3">
+                <Layers className="w-4 h-4 text-accent-light" />
+                <label className="text-sm font-medium">Pages</label>
+              </div>
+
+              <div className="flex gap-2 mb-3">
+                <button
+                  onClick={() => setPageMode("all")}
+                  disabled={isProcessing}
+                  className={`flex-1 py-2 px-4 rounded-xl text-sm font-medium transition-all duration-200 ${
+                    pageMode === "all"
+                      ? "bg-accent/15 ring-2 ring-accent text-accent-light"
+                      : "glass hover:bg-white/[0.06] text-muted"
+                  } ${isProcessing ? "opacity-50 cursor-not-allowed" : ""}`}
+                >
+                  All Pages ({pageCount})
+                </button>
+                <button
+                  onClick={() => setPageMode("select")}
+                  disabled={isProcessing}
+                  className={`flex-1 py-2 px-4 rounded-xl text-sm font-medium transition-all duration-200 ${
+                    pageMode === "select"
+                      ? "bg-accent/15 ring-2 ring-accent text-accent-light"
+                      : "glass hover:bg-white/[0.06] text-muted"
+                  } ${isProcessing ? "opacity-50 cursor-not-allowed" : ""}`}
+                >
+                  Select Pages
+                </button>
+              </div>
+
+              {pageMode === "select" && (
+                <div className="flex flex-wrap gap-2 animate-fade-in">
+                  {Array.from({ length: pageCount }, (_, i) => i + 1).map(
+                    (page) => (
+                      <button
+                        key={page}
+                        onClick={() => togglePage(page)}
+                        disabled={isProcessing}
+                        className={`w-10 h-10 rounded-xl text-sm font-medium transition-all duration-200 ${
+                          selectedPages.has(page)
+                            ? "bg-accent text-white glow-accent"
+                            : "glass text-muted hover:bg-white/[0.06] hover:text-foreground"
+                        } ${isProcessing ? "opacity-50 cursor-not-allowed" : ""}`}
+                      >
+                        {page}
+                      </button>
+                    )
+                  )}
+                  {pageMode === "select" && (
+                    <div className="w-full mt-1">
+                      <p className="text-xs text-muted">
+                        {selectedPages.size} of {pageCount} pages selected
+                        {selectedPages.size > 1 &&
+                          " · Will be downloaded as ZIP"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Progress */}
           {status !== "idle" && (
             <div className="space-y-3 animate-fade-in">
               <ProgressBar
-                progress={STATUS_PROGRESS[status]}
-                label={STATUS_LABELS[status]}
-                indeterminate={isProcessing}
+                progress={progress}
+                label={progressLabel}
+                indeterminate={isProcessing && progress === 0}
               />
 
               {status === "done" && (
@@ -350,8 +453,8 @@ export default function ConvertPage() {
         </div>
 
         <p className="text-center text-muted/60 text-xs mt-8">
-          Your files are processed on the server and never stored. They are
-          deleted immediately after conversion.
+          All conversion happens in your browser. Your files are never uploaded
+          to any server.
         </p>
       </main>
     </div>

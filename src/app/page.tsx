@@ -8,6 +8,7 @@ import {
   FileType,
   ArrowRight,
   Zap,
+  Layers,
 } from "lucide-react";
 
 export default function LoginPage() {
@@ -56,6 +57,11 @@ export default function LoginPage() {
               title="Up to 600 DPI"
               desc="Adjustable resolution slider for print-quality exports"
             />
+            <Feature
+              icon={<Layers className="w-5 h-5" />}
+              title="Merge Files"
+              desc="Combine PDFs, PNGs, and JPGs into a single PDF document"
+            />
           </div>
 
           {/* CTAs */}
@@ -63,8 +69,17 @@ export default function LoginPage() {
             href="/convert"
             className="group flex items-center justify-center gap-3 w-full py-4 px-6 rounded-2xl bg-accent hover:bg-accent/90 text-white font-semibold text-lg transition-all duration-200 glow-accent hover:scale-[1.02] active:scale-[0.98]"
           >
-            Upload PDF Directly
+            Convert PDF
             <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+          </a>
+
+          <a
+            href="/merge"
+            className="group flex items-center justify-center gap-3 w-full py-3.5 px-6 rounded-2xl glass hover:bg-white/[0.06] text-foreground font-medium transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
+          >
+            <Layers className="w-5 h-5 text-accent-light" />
+            Merge Files to PDF
+            <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1 text-muted" />
           </a>
 
           <div className="flex items-center gap-4 my-2">
@@ -89,7 +104,7 @@ export default function LoginPage() {
 
         {/* Footer */}
         <p className="text-center text-muted/60 text-xs mt-8">
-          Built with Next.js, Sharp &amp; Inkscape · Not affiliated with Canva
+          Built with Next.js · All processing happens in your browser
         </p>
       </div>
     </main>
